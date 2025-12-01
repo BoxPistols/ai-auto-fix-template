@@ -1,0 +1,53 @@
+# AI Auto-Fix ワークフロー呼び出しテンプレート
+#
+# このファイルを .github/workflows/ai-auto-fix.yml としてコピーして使用してください
+#
+# 前提条件:
+# 1. GitHub Secrets に ANTHROPIC_API_KEY を設定
+# 2. Settings → Actions → General で "Read and write permissions" を有効化
+# 3. "Allow GitHub Actions to create and approve pull requests" をチェック
+
+name: AI Auto Fix
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
+  workflow_dispatch:
+
+jobs:
+  ai-auto-fix:
+    # 中央リポジトリのReusable Workflowを呼び出し
+    # ↓ここを実際のリポジトリに変更してください
+    uses: BoxPistols/ai-auto-fix-template/.github/workflows/reusable-ai-auto-fix.yml@main
+
+    # プロジェクト固有の設定
+    with:
+      # Node.js バージョン
+      node_version: '20'
+
+      # パッケージマネージャー (pnpm / npm / yarn)
+      package_manager: 'pnpm'
+      pnpm_version: '9'
+
+      # コマンド名（package.json の scripts に合わせる）
+      lint_command: 'lint'
+      lint_fix_command: 'lint:fix'
+      format_command: 'format'
+      type_check_command: 'type-check'
+      build_command: 'build'
+      test_command: 'test'
+
+      # AI分析用のコンテキスト
+      tech_stack: 'React 18, TypeScript 5, Vite, Tailwind CSS'
+
+      # Claudeモデル
+      ai_model: 'claude-sonnet-4-20250514'
+
+      # コメント言語 (ja / en)
+      language: 'ja'
+
+    # シークレット（必須）
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

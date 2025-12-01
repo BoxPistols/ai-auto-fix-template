@@ -1,0 +1,500 @@
+# Reusable AI Auto-Fix Workflow
+# このワークフローは他のリポジトリから呼び出して使用できます
+#
+# 使用方法:
+# jobs:
+#   ai-auto-fix:
+#     uses: BoxPistols/ai-auto-fix-template/.github/workflows/reusable-ai-auto-fix.yml@main
+#     secrets:
+#       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+name: Reusable AI Auto-Fix
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '20'
+      package_manager:
+        description: 'Package manager (pnpm, npm, yarn)'
+        required: false
+        type: string
+        default: 'pnpm'
+      pnpm_version:
+        description: 'pnpm version (if using pnpm)'
+        required: false
+        type: string
+        default: '9'
+      lint_command:
+        description: 'Lint command'
+        required: false
+        type: string
+        default: 'lint'
+      lint_fix_command:
+        description: 'Lint fix command'
+        required: false
+        type: string
+        default: 'lint:fix'
+      format_command:
+        description: 'Format command'
+        required: false
+        type: string
+        default: 'format'
+      type_check_command:
+        description: 'Type check command'
+        required: false
+        type: string
+        default: 'type-check'
+      build_command:
+        description: 'Build command'
+        required: false
+        type: string
+        default: 'build'
+      test_command:
+        description: 'Test command'
+        required: false
+        type: string
+        default: 'test'
+      tech_stack:
+        description: 'Technology stack description for AI context'
+        required: false
+        type: string
+        default: 'React, TypeScript, Vite'
+      ai_model:
+        description: 'Claude model to use'
+        required: false
+        type: string
+        default: 'claude-sonnet-4-20250514'
+      language:
+        description: 'Language for comments (ja/en)'
+        required: false
+        type: string
+        default: 'ja'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+        description: 'Anthropic API Key for Claude'
+    outputs:
+      fixes_applied:
+        description: 'Whether fixes were applied'
+        value: ${{ jobs.ai-fix.outputs.fixes_applied }}
+      issues_detected:
+        description: 'Whether issues were detected'
+        value: ${{ jobs.detect-issues.outputs.should_run_fix }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  detect-issues:
+    name: 問題検出
+    runs-on: ubuntu-latest
+    outputs:
+      has_lint_errors: ${{ steps.detect.outputs.lint_errors }}
+      has_format_errors: ${{ steps.detect.outputs.format_errors }}
+      has_ts_errors: ${{ steps.detect.outputs.ts_errors }}
+      has_build_errors: ${{ steps.detect.outputs.build_errors }}
+      has_test_failures: ${{ steps.detect.outputs.test_failures }}
+      has_conflicts: ${{ steps.detect.outputs.conflicts }}
+      gemini_high_priority: ${{ steps.gemini-check.outputs.gemini_high }}
+      should_run_fix: ${{ steps.decision.outputs.should_run }}
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        if: inputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+
+      - name: Install dependencies
+        run: |
+          if [ "${{ inputs.package_manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          else
+            npm ci
+          fi
+        continue-on-error: true
+
+      - name: Detect Issues
+        id: detect
+        continue-on-error: true
+        run: |
+          PKG_MGR="${{ inputs.package_manager }}"
+          RUN_CMD="$PKG_MGR run"
+
+          echo "🔍 問題を検出中..."
+
+          # Lint check
+          echo "## Lint Check" > lint.log
+          if ! $RUN_CMD ${{ inputs.lint_command }} >> lint.log 2>&1; then
+            echo "lint_errors=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Lint errors detected"
+          fi
+
+          # Format check
+          if grep -q '"${{ inputs.format_command }}"' package.json 2>/dev/null || \
+             grep -q "'${{ inputs.format_command }}'" package.json 2>/dev/null; then
+            echo "## Format Check" > format.log
+            if ! $RUN_CMD ${{ inputs.format_command }}:check >> format.log 2>&1; then
+              echo "format_errors=true" >> $GITHUB_OUTPUT
+              echo "⚠️ Format errors detected"
+            fi
+          fi
+
+          # TypeScript check
+          if grep -q '"${{ inputs.type_check_command }}"' package.json 2>/dev/null; then
+            echo "## TypeScript Check" > ts.log
+            if ! $RUN_CMD ${{ inputs.type_check_command }} >> ts.log 2>&1; then
+              echo "ts_errors=true" >> $GITHUB_OUTPUT
+              echo "⚠️ TypeScript errors detected"
+            fi
+          fi
+
+          # Build check
+          echo "## Build Check" > build.log
+          if ! $RUN_CMD ${{ inputs.build_command }} >> build.log 2>&1; then
+            echo "build_errors=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Build errors detected"
+          fi
+
+          # Test check
+          if grep -q '"${{ inputs.test_command }}"' package.json 2>/dev/null; then
+            echo "## Test Check" > test.log
+            if ! $RUN_CMD ${{ inputs.test_command }} >> test.log 2>&1; then
+              echo "test_failures=true" >> $GITHUB_OUTPUT
+              echo "⚠️ Test failures detected"
+            fi
+          fi
+
+          # Conflict check
+          echo "## Conflict Check" > conflict.log
+          git fetch origin ${{ github.base_ref }} || true
+          BASE_SHA=$(git merge-base HEAD origin/${{ github.base_ref }} 2>/dev/null || echo "")
+          if [ -n "$BASE_SHA" ]; then
+            if git merge-tree $BASE_SHA HEAD origin/${{ github.base_ref }} 2>/dev/null | grep -q '<<<<<<<'; then
+              echo "conflicts=true" >> $GITHUB_OUTPUT
+              echo "⚠️ Merge conflicts detected"
+            fi
+          fi
+
+      - name: Check Gemini Review Priority
+        id: gemini-check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const reviews = await github.rest.pulls.listReviews({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+              });
+
+              const geminiReview = reviews.data.find(r =>
+                r.user.login.toLowerCase().includes('gemini') ||
+                r.body.toLowerCase().includes('gemini')
+              );
+
+              if (geminiReview) {
+                console.log('✅ Gemini review found');
+                if (/priority:?\s*high/i.test(geminiReview.body) ||
+                    /クリティカル|critical/i.test(geminiReview.body) ||
+                    /高優先度|高優先/i.test(geminiReview.body)) {
+                  core.setOutput('gemini_high', 'true');
+                  console.log('🔴 High priority issues found');
+                }
+                const fs = require('fs');
+                fs.writeFileSync('gemini_review.txt', geminiReview.body);
+              }
+            } catch (error) {
+              console.log('ℹ️ No reviews yet:', error.message);
+            }
+
+      - name: Decide if fix is needed
+        id: decision
+        run: |
+          if [ "${{ steps.detect.outputs.lint_errors }}" = "true" ] || \
+             [ "${{ steps.detect.outputs.format_errors }}" = "true" ] || \
+             [ "${{ steps.detect.outputs.ts_errors }}" = "true" ] || \
+             [ "${{ steps.detect.outputs.build_errors }}" = "true" ] || \
+             [ "${{ steps.detect.outputs.test_failures }}" = "true" ] || \
+             [ "${{ steps.detect.outputs.conflicts }}" = "true" ] || \
+             [ "${{ steps.gemini-check.outputs.gemini_high }}" = "true" ]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+            echo "🤖 自動修正が必要です"
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+            echo "✅ 問題は検出されませんでした"
+          fi
+
+      - name: Upload Logs
+        if: steps.decision.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: issue-logs
+          path: |
+            lint.log
+            format.log
+            ts.log
+            build.log
+            test.log
+            conflict.log
+            gemini_review.txt
+          retention-days: 7
+
+  auto-fix-simple:
+    name: 簡単な修正
+    needs: detect-issues
+    if: |
+      needs.detect-issues.outputs.should_run_fix == 'true' &&
+      (needs.detect-issues.outputs.has_lint_errors == 'true' ||
+       needs.detect-issues.outputs.has_format_errors == 'true')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        if: inputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+
+      - name: Install dependencies
+        run: |
+          if [ "${{ inputs.package_manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          else
+            npm ci
+          fi
+
+      - name: Auto-fix
+        run: |
+          PKG_MGR="${{ inputs.package_manager }}"
+          RUN_CMD="$PKG_MGR run"
+
+          echo "🔧 自動修正中..."
+          $RUN_CMD ${{ inputs.lint_fix_command }} || true
+
+          if grep -q '"${{ inputs.format_command }}"' package.json 2>/dev/null; then
+            $RUN_CMD ${{ inputs.format_command }} || true
+          fi
+
+      - name: Commit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "🤖 Auto-fix: Lint and format corrections"
+            git push
+            echo "✅ Fixes committed"
+          else
+            echo "ℹ️ No changes to commit"
+          fi
+
+  ai-fix:
+    name: AI修正（Claude）
+    needs: [detect-issues, auto-fix-simple]
+    if: |
+      always() &&
+      needs.detect-issues.outputs.should_run_fix == 'true' &&
+      (needs.detect-issues.outputs.has_ts_errors == 'true' ||
+       needs.detect-issues.outputs.has_build_errors == 'true' ||
+       needs.detect-issues.outputs.has_test_failures == 'true' ||
+       needs.detect-issues.outputs.gemini_high_priority == 'true')
+    runs-on: ubuntu-latest
+    outputs:
+      fixes_applied: ${{ steps.apply-fixes.outputs.fixes_applied }}
+
+    steps:
+      - name: Check API Key
+        id: check-key
+        run: |
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "⚠️ ANTHROPIC_API_KEY not set, skipping AI analysis"
+            echo "has_key=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_key=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Checkout PR branch
+        if: steps.check-key.outputs.has_key == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        if: steps.check-key.outputs.has_key == 'true' && inputs.package_manager == 'pnpm'
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ inputs.pnpm_version }}
+
+      - name: Setup Node.js
+        if: steps.check-key.outputs.has_key == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: ${{ inputs.package_manager }}
+
+      - name: Install dependencies
+        if: steps.check-key.outputs.has_key == 'true'
+        run: |
+          if [ "${{ inputs.package_manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          elif [ "${{ inputs.package_manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          else
+            npm ci
+          fi
+
+      - name: Download Logs
+        if: steps.check-key.outputs.has_key == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: issue-logs
+        continue-on-error: true
+
+      - name: Prepare Context
+        if: steps.check-key.outputs.has_key == 'true'
+        run: |
+          git fetch origin ${{ github.base_ref }} || true
+          git diff origin/${{ github.base_ref }}...HEAD > pr_diff.txt 2>/dev/null || echo "" > pr_diff.txt
+          cat package.json | jq '{name, version, dependencies, devDependencies, scripts}' > package_info.json 2>/dev/null || echo "{}" > package_info.json
+
+      - name: AI Analysis with Claude
+        if: steps.check-key.outputs.has_key == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          LANG="${{ inputs.language }}"
+          if [ "$LANG" = "ja" ]; then
+            SYSTEM_MSG="あなたは経験豊富なフルスタックエンジニアです。技術スタック: ${{ inputs.tech_stack }}。CI/CDテスト合格を最優先に、問題を分析・修正してください。"
+          else
+            SYSTEM_MSG="You are an experienced full-stack engineer. Tech stack: ${{ inputs.tech_stack }}. Prioritize CI/CD test passing and analyze/fix issues."
+          fi
+
+          CONTENT="以下の問題を分析し、JSON形式で修正計画を返してください。\n\n"
+          CONTENT+="# Project\n\`\`\`json\n$(cat package_info.json)\n\`\`\`\n\n"
+          CONTENT+="# Lint\n\`\`\`\n$(cat lint.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
+          CONTENT+="# TypeScript\n\`\`\`\n$(cat ts.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
+          CONTENT+="# Build\n\`\`\`\n$(cat build.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
+          CONTENT+="# Test\n\`\`\`\n$(cat test.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
+          CONTENT+="# Gemini Review\n$(cat gemini_review.txt 2>/dev/null || echo 'None')\n\n"
+          CONTENT+="# Diff\n\`\`\`diff\n$(head -500 pr_diff.txt)\n\`\`\`\n\n"
+          CONTENT+='JSON形式: {"should_fix_now":bool,"fixes":[{"file":"path","action":"modify","content":"full content","reason":"why"}],"summary_ja":"summary"}'
+
+          cat > request.json << EOF
+          {
+            "model": "${{ inputs.ai_model }}",
+            "max_tokens": 16000,
+            "system": "$SYSTEM_MSG",
+            "messages": [{"role": "user", "content": "$(echo "$CONTENT" | sed 's/"/\\"/g' | tr '\n' ' ')"}]
+          }
+          EOF
+
+          curl -s https://api.anthropic.com/v1/messages \
+            -H "content-type: application/json" \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -d @request.json > response.json
+
+          cat response.json | jq -r '.content[0].text' > response_text.txt
+
+          if grep -q '```json' response_text.txt; then
+            sed -n '/```json/,/```/p' response_text.txt | sed '1d;$d' > fix_plan.json
+          else
+            cat response_text.txt > fix_plan.json
+          fi
+
+      - name: Apply Fixes
+        if: steps.check-key.outputs.has_key == 'true'
+        id: apply-fixes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            let plan;
+            try {
+              plan = JSON.parse(fs.readFileSync('fix_plan.json', 'utf8'));
+            } catch (e) {
+              console.log('Failed to parse plan:', e);
+              return;
+            }
+
+            let applied = [];
+            if (plan.should_fix_now && plan.fixes) {
+              for (const fix of plan.fixes) {
+                try {
+                  const dir = path.dirname(fix.file);
+                  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+                  if (fix.action === 'delete') {
+                    if (fs.existsSync(fix.file)) fs.unlinkSync(fix.file);
+                  } else {
+                    fs.writeFileSync(fix.file, fix.content, 'utf8');
+                  }
+                  applied.push(`✅ ${fix.file}: ${fix.reason}`);
+                } catch (e) {
+                  applied.push(`❌ ${fix.file}: ${e.message}`);
+                }
+              }
+            }
+
+            const body = `## 🤖 AI Auto-Fix Report\n\n### 修正内容\n${applied.length > 0 ? applied.join('\n') : '修正なし'}\n\n### 要約\n${plan.summary_ja || 'N/A'}\n\n---\n_Powered by Claude_`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+            core.setOutput('fixes_applied', applied.length > 0);
+
+      - name: Commit AI Fixes
+        if: steps.check-key.outputs.has_key == 'true' && steps.apply-fixes.outputs.fixes_applied == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -n "$(git status --porcelain)" ]; then
+            git add .
+            git commit -m "🤖 AI Fix: Resolve issues with Claude"
+            git push
+          fi
