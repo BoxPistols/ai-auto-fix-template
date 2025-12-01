@@ -3,7 +3,8 @@
 # このファイルを .github/workflows/ai-auto-fix.yml としてコピーして使用してください
 #
 # 前提条件:
-# 1. GitHub Secrets に ANTHROPIC_API_KEY を設定
+# 1. GitHub Secrets に GOOGLE_API_KEY を設定（推奨・無料枠あり）
+#    または ANTHROPIC_API_KEY を設定（フォールバック）
 # 2. Settings → Actions → General で "Read and write permissions" を有効化
 # 3. "Allow GitHub Actions to create and approve pull requests" をチェック
 
@@ -42,12 +43,14 @@ jobs:
       # AI分析用のコンテキスト
       tech_stack: 'React 18, TypeScript 5, Vite, Tailwind CSS'
 
-      # Claudeモデル
-      ai_model: 'claude-sonnet-4-20250514'
+      # AIモデル設定
+      gemini_model: 'gemini-1.5-flash'           # Gemini使用時
+      claude_model: 'claude-sonnet-4-20250514'   # Claude使用時（フォールバック）
 
       # コメント言語 (ja / en)
       language: 'ja'
 
-    # シークレット（必須）
+    # シークレット（どちらか一方は必須）
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}       # 推奨（無料枠あり）
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} # オプション（フォールバック）

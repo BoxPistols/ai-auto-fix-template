@@ -6,7 +6,8 @@
 #   ai-auto-fix:
 #     uses: BoxPistols/ai-auto-fix-template/.github/workflows/reusable-ai-auto-fix.yml@main
 #     secrets:
-#       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}      # 推奨（無料枠あり）
+#       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }} # オプション（フォールバック）
 
 name: Reusable AI Auto-Fix
 
@@ -63,8 +64,13 @@ on:
         required: false
         type: string
         default: 'React, TypeScript, Vite'
-      ai_model:
-        description: 'Claude model to use'
+      gemini_model:
+        description: 'Gemini model to use'
+        required: false
+        type: string
+        default: 'gemini-1.5-flash'
+      claude_model:
+        description: 'Claude model to use (fallback)'
         required: false
         type: string
         default: 'claude-sonnet-4-20250514'
@@ -74,9 +80,12 @@ on:
         type: string
         default: 'ja'
     secrets:
+      GOOGLE_API_KEY:
+        required: false
+        description: 'Google API Key for Gemini (recommended, free tier available)'
       ANTHROPIC_API_KEY:
         required: false
-        description: 'Anthropic API Key for Claude'
+        description: 'Anthropic API Key for Claude (fallback)'
     outputs:
       fixes_applied:
         description: 'Whether fixes were applied'
@@ -325,7 +334,7 @@ jobs:
           fi
 
   ai-fix:
-    name: AI修正（Claude）
+    name: AI修正
     needs: [detect-issues, auto-fix-simple]
     if: |
       always() &&
@@ -339,14 +348,23 @@ jobs:
       fixes_applied: ${{ steps.apply-fixes.outputs.fixes_applied }}
 
     steps:
-      - name: Check API Key
+      - name: Check API Keys
         id: check-key
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
-            echo "⚠️ ANTHROPIC_API_KEY not set, skipping AI analysis"
-            echo "has_key=false" >> $GITHUB_OUTPUT
-          else
+          if [ -n "$GOOGLE_API_KEY" ]; then
+            echo "✅ GOOGLE_API_KEY found - using Gemini"
             echo "has_key=true" >> $GITHUB_OUTPUT
+            echo "provider=gemini" >> $GITHUB_OUTPUT
+          elif [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "✅ ANTHROPIC_API_KEY found - using Claude"
+            echo "has_key=true" >> $GITHUB_OUTPUT
+            echo "provider=claude" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No API key found, skipping AI analysis"
+            echo "has_key=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Checkout PR branch
@@ -395,8 +413,61 @@ jobs:
           git diff origin/${{ github.base_ref }}...HEAD > pr_diff.txt 2>/dev/null || echo "" > pr_diff.txt
           cat package.json | jq '{name, version, dependencies, devDependencies, scripts}' > package_info.json 2>/dev/null || echo "{}" > package_info.json
 
+      - name: AI Analysis with Gemini
+        if: steps.check-key.outputs.has_key == 'true' && steps.check-key.outputs.provider == 'gemini'
+        env:
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+        run: |
+          LANG="${{ inputs.language }}"
+          if [ "$LANG" = "ja" ]; then
+            SYSTEM_MSG="あなたは経験豊富なフルスタックエンジニアです。技術スタック: ${{ inputs.tech_stack }}。CI/CDテスト合格を最優先に、問題を分析・修正してください。"
+          else
+            SYSTEM_MSG="You are an experienced full-stack engineer. Tech stack: ${{ inputs.tech_stack }}. Prioritize CI/CD test passing and analyze/fix issues."
+          fi
+
+          CONTENT="$SYSTEM_MSG\n\n以下の問題を分析し、JSON形式で修正計画を返してください。\n\n"
+          CONTENT+="# Project\n\`\`\`json\n$(cat package_info.json)\n\`\`\`\n\n"
+          CONTENT+="# Lint\n\`\`\`\n$(cat lint.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
+          CONTENT+="# TypeScript\n\`\`\`\n$(cat ts.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
+          CONTENT+="# Build\n\`\`\`\n$(cat build.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
+          CONTENT+="# Test\n\`\`\`\n$(cat test.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
+          CONTENT+="# Gemini Review\n$(cat gemini_review.txt 2>/dev/null || echo 'None')\n\n"
+          CONTENT+="# Diff\n\`\`\`diff\n$(head -500 pr_diff.txt)\n\`\`\`\n\n"
+          CONTENT+='JSON形式: {"should_fix_now":bool,"fixes":[{"file":"path","action":"modify","content":"full content","reason":"why"}],"summary_ja":"summary"}'
+
+          # Escape for JSON
+          ESCAPED_CONTENT=$(echo "$CONTENT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+
+          cat > request.json << EOF
+          {
+            "contents": [{"parts": [{"text": $ESCAPED_CONTENT}]}],
+            "generationConfig": {
+              "temperature": 0.2,
+              "maxOutputTokens": 16000
+            }
+          }
+          EOF
+
+          curl -s "https://generativelanguage.googleapis.com/v1beta/models/${{ inputs.gemini_model }}:generateContent?key=$GOOGLE_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @request.json > response.json
+
+          cat response.json | jq -r '.candidates[0].content.parts[0].text // empty' > response_text.txt
+
+          if [ ! -s response_text.txt ]; then
+            echo '{"should_fix_now":false,"fixes":[],"summary_ja":"AI応答を取得できませんでした"}' > fix_plan.json
+          elif grep -q '```json' response_text.txt; then
+            sed -n '/```json/,/```/p' response_text.txt | sed '1d;$d' > fix_plan.json
+          elif grep -q '```' response_text.txt; then
+            sed -n '/```/,/```/p' response_text.txt | sed '1d;$d' > fix_plan.json
+          else
+            cat response_text.txt > fix_plan.json
+          fi
+
+          echo "gemini" > ai_provider.txt
+
       - name: AI Analysis with Claude
-        if: steps.check-key.outputs.has_key == 'true'
+        if: steps.check-key.outputs.has_key == 'true' && steps.check-key.outputs.provider == 'claude'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
@@ -417,12 +488,16 @@ jobs:
           CONTENT+="# Diff\n\`\`\`diff\n$(head -500 pr_diff.txt)\n\`\`\`\n\n"
           CONTENT+='JSON形式: {"should_fix_now":bool,"fixes":[{"file":"path","action":"modify","content":"full content","reason":"why"}],"summary_ja":"summary"}'
 
+          # Escape for JSON
+          ESCAPED_CONTENT=$(echo "$CONTENT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          ESCAPED_SYSTEM=$(echo "$SYSTEM_MSG" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+
           cat > request.json << EOF
           {
-            "model": "${{ inputs.ai_model }}",
+            "model": "${{ inputs.claude_model }}",
             "max_tokens": 16000,
-            "system": "$SYSTEM_MSG",
-            "messages": [{"role": "user", "content": "$(echo "$CONTENT" | sed 's/"/\\"/g' | tr '\n' ' ')"}]
+            "system": $ESCAPED_SYSTEM,
+            "messages": [{"role": "user", "content": $ESCAPED_CONTENT}]
           }
           EOF
 
@@ -432,17 +507,23 @@ jobs:
             -H "anthropic-version: 2023-06-01" \
             -d @request.json > response.json
 
-          cat response.json | jq -r '.content[0].text' > response_text.txt
+          cat response.json | jq -r '.content[0].text // empty' > response_text.txt
 
-          if grep -q '```json' response_text.txt; then
+          if [ ! -s response_text.txt ]; then
+            echo '{"should_fix_now":false,"fixes":[],"summary_ja":"AI応答を取得できませんでした"}' > fix_plan.json
+          elif grep -q '```json' response_text.txt; then
             sed -n '/```json/,/```/p' response_text.txt | sed '1d;$d' > fix_plan.json
           else
             cat response_text.txt > fix_plan.json
           fi
 
+          echo "claude" > ai_provider.txt
+
       - name: Apply Fixes
         if: steps.check-key.outputs.has_key == 'true'
         id: apply-fixes
+        env:
+          AI_PROVIDER: ${{ steps.check-key.outputs.provider }}
         uses: actions/github-script@v7
         with:
           script: |
@@ -456,6 +537,9 @@ jobs:
               console.log('Failed to parse plan:', e);
               return;
             }
+
+            const provider = process.env.AI_PROVIDER || 'unknown';
+            const providerName = provider === 'gemini' ? 'Gemini' : 'Claude';
 
             let applied = [];
             if (plan.should_fix_now && plan.fixes) {
@@ -476,7 +560,7 @@ jobs:
               }
             }
 
-            const body = `## 🤖 AI Auto-Fix Report\n\n### 修正内容\n${applied.length > 0 ? applied.join('\n') : '修正なし'}\n\n### 要約\n${plan.summary_ja || 'N/A'}\n\n---\n_Powered by Claude_`;
+            const body = `## 🤖 AI Auto-Fix Report\n\n### 修正内容\n${applied.length > 0 ? applied.join('\n') : '修正なし'}\n\n### 要約\n${plan.summary_ja || 'N/A'}\n\n---\n_Powered by ${providerName}_`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -489,12 +573,17 @@ jobs:
 
       - name: Commit AI Fixes
         if: steps.check-key.outputs.has_key == 'true' && steps.apply-fixes.outputs.fixes_applied == 'true'
+        env:
+          AI_PROVIDER: ${{ steps.check-key.outputs.provider }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          PROVIDER="${AI_PROVIDER:-AI}"
+          PROVIDER_NAME=$(echo "$PROVIDER" | sed 's/gemini/Gemini/; s/claude/Claude/')
+
           if [ -n "$(git status --porcelain)" ]; then
             git add .
-            git commit -m "🤖 AI Fix: Resolve issues with Claude"
+            git commit -m "🤖 AI Fix: Resolve issues with $PROVIDER_NAME"
             git push
           fi

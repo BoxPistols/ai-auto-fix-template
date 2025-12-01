@@ -82,6 +82,7 @@ echo ""
 cat > .github/workflows/ai-auto-fix.yml << EOF
 # AI Auto-Fix ワークフロー
 # Gemini Code Assist のレビューに自動対応します
+# AI分析: Gemini (推奨・無料枠あり) または Claude (フォールバック)
 
 name: AI Auto Fix
 
@@ -101,6 +102,7 @@ jobs:
       tech_stack: '$TECH_STACK'
       language: 'ja'
     secrets:
+      GOOGLE_API_KEY: \${{ secrets.GOOGLE_API_KEY }}
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
 EOF
 
@@ -108,12 +110,22 @@ echo "✅ ワークフローファイルを作成しました"
 echo "   .github/workflows/ai-auto-fix.yml"
 echo ""
 
+# リポジトリURLを取得
+REPO_URL=$(git remote get-url origin 2>/dev/null | sed 's/.*github.com[:/]\(.*\)\.git/\1/' || echo "YOUR_USERNAME/YOUR_REPO")
+
 echo "=========================================="
 echo "📋 残りの設定手順"
 echo "=========================================="
 echo ""
-echo "1. GitHub Secrets に ANTHROPIC_API_KEY を設定"
-echo "   https://github.com/$(git remote get-url origin | sed 's/.*github.com[:/]\(.*\)\.git/\1/')/settings/secrets/actions"
+echo "1. GitHub Secrets に API キーを設定（どちらか一方は必須）"
+echo ""
+echo "   🌟 推奨: GOOGLE_API_KEY（Gemini用・無料枠あり）"
+echo "      取得: https://aistudio.google.com/apikey"
+echo ""
+echo "   📦 オプション: ANTHROPIC_API_KEY（Claude用・フォールバック）"
+echo "      取得: https://console.anthropic.com/"
+echo ""
+echo "   設定場所: https://github.com/$REPO_URL/settings/secrets/actions"
 echo ""
 echo "2. GitHub Actions の権限を設定"
 echo "   Settings → Actions → General"
