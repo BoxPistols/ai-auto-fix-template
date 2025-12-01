@@ -44,7 +44,7 @@ jobs:
       tech_stack: 'React 18, TypeScript 5, Vite, Tailwind CSS'
 
       # AIモデル設定
-      gemini_model: 'gemini-pro'                 # Gemini使用時
+      gemini_model: 'gemini-2.0-flash'           # Gemini使用時
       claude_model: 'claude-sonnet-4-20250514'   # Claude使用時（フォールバック）
 
       # コメント言語 (ja / en)
