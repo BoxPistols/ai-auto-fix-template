@@ -68,7 +68,7 @@ on:
         description: 'Gemini model to use'
         required: false
         type: string
-        default: 'gemini-1.5-flash'
+        default: 'gemini-pro'
       claude_model:
         description: 'Claude model to use (fallback)'
         required: false

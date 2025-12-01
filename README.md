@@ -109,7 +109,7 @@ jobs:
 | `build_command` | `'build'` | Build コマンド |
 | `test_command` | `'test'` | Test コマンド |
 | `tech_stack` | `'React, TypeScript, Vite'` | AI 用技術スタック説明 |
-| `gemini_model` | `'gemini-1.5-flash'` | Gemini モデル |
+| `gemini_model` | `'gemini-pro'` | Gemini モデル |
 | `claude_model` | `'claude-sonnet-4-20250514'` | Claude モデル（フォールバック） |
 | `language` | `'ja'` | コメント言語 (`ja`/`en`) |
 
