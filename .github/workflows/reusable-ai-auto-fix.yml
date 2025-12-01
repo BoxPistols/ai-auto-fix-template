@@ -532,17 +532,24 @@ jobs:
 
             let plan;
             try {
-              plan = JSON.parse(fs.readFileSync('fix_plan.json', 'utf8'));
+              const parsed = JSON.parse(fs.readFileSync('fix_plan.json', 'utf8'));
+              // Normalize structure: Gemini may return nested fix_plan
+              plan = parsed.fix_plan || parsed;
             } catch (e) {
               console.log('Failed to parse plan:', e);
               return;
             }
 
             const provider = process.env.AI_PROVIDER || 'unknown';
-            const providerName = provider === 'gemini' ? 'Gemini' : 'Claude';
+            const providerName = provider === 'gemini' ? 'Gemini 2.0 Flash' : 'Claude Sonnet 4';
+
+            // Support both should_fix_now and should_fix keys
+            const shouldFix = plan.should_fix_now ?? plan.should_fix;
+            console.log('📋 Should fix:', shouldFix);
+            console.log('📋 Fixes count:', plan.fixes?.length || 0);
 
             let applied = [];
-            if (plan.should_fix_now && plan.fixes) {
+            if (shouldFix && plan.fixes) {
               for (const fix of plan.fixes) {
                 try {
                   const dir = path.dirname(fix.file);
@@ -560,7 +567,9 @@ jobs:
               }
             }
 
-            const body = `## 🤖 AI Auto-Fix Report\n\n### 修正内容\n${applied.length > 0 ? applied.join('\n') : '修正なし'}\n\n### 要約\n${plan.summary_ja || 'N/A'}\n\n---\n_Powered by ${providerName}_`;
+            // Support both summary_ja and summary keys
+            const summary = plan.summary_ja || plan.summary || 'N/A';
+            const body = `## 🤖 AI Auto-Fix Report\n\n### 修正内容\n${applied.length > 0 ? applied.join('\n') : '修正なし'}\n\n### 要約\n${summary}\n\n---\n_Powered by ${providerName}_`;
 
             await github.rest.issues.createComment({
               owner: context.repo.owner,
