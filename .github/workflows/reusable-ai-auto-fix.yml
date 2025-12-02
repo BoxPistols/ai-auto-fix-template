@@ -425,18 +425,31 @@ jobs:
             SYSTEM_MSG="You are an experienced full-stack engineer. Tech stack: ${{ inputs.tech_stack }}. Prioritize CI/CD test passing and analyze/fix issues."
           fi
 
+          # Helper function to sanitize log content
+          # - Removes ANSI escape sequences (color codes, cursor control)
+          # - Removes control characters (U+0000-U+001F except LF and TAB)
+          # Usage: sanitize_log filename OR command | sanitize_log
+          sanitize_log() {
+            if [ -n "$1" ]; then
+              cat "$1" 2>/dev/null || echo 'None'
+            else
+              cat
+            fi | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g' \
+               | tr -d '\000-\010\013-\037'
+          }
+
           CONTENT="$SYSTEM_MSG\n\n以下の問題を分析し、JSON形式で修正計画を返してください。\n\n"
-          CONTENT+="# Project\n\`\`\`json\n$(cat package_info.json)\n\`\`\`\n\n"
-          CONTENT+="# Lint\n\`\`\`\n$(cat lint.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
-          CONTENT+="# TypeScript\n\`\`\`\n$(cat ts.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
-          CONTENT+="# Build\n\`\`\`\n$(cat build.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
-          CONTENT+="# Test\n\`\`\`\n$(cat test.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
-          CONTENT+="# Gemini Review\n$(cat gemini_review.txt 2>/dev/null || echo 'None')\n\n"
-          CONTENT+="# Diff\n\`\`\`diff\n$(head -500 pr_diff.txt)\n\`\`\`\n\n"
+          CONTENT+="# Project\n\`\`\`json\n$(sanitize_log package_info.json)\n\`\`\`\n\n"
+          CONTENT+="# Lint\n\`\`\`\n$(sanitize_log lint.log)\n\`\`\`\n\n"
+          CONTENT+="# TypeScript\n\`\`\`\n$(sanitize_log ts.log)\n\`\`\`\n\n"
+          CONTENT+="# Build\n\`\`\`\n$(sanitize_log build.log)\n\`\`\`\n\n"
+          CONTENT+="# Test\n\`\`\`\n$(sanitize_log test.log)\n\`\`\`\n\n"
+          CONTENT+="# Gemini Review\n$(sanitize_log gemini_review.txt)\n\n"
+          CONTENT+="# Diff\n\`\`\`diff\n$(head -500 pr_diff.txt | sanitize_log)\n\`\`\`\n\n"
           CONTENT+='JSON形式: {"should_fix_now":bool,"fixes":[{"file":"path","action":"modify","content":"full content","reason":"why"}],"summary_ja":"summary"}'
 
-          # Escape for JSON
-          ESCAPED_CONTENT=$(echo "$CONTENT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          # Escape for JSON using Python (handles all remaining special characters)
+          ESCAPED_CONTENT=$(printf '%s' "$CONTENT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 
           cat > request.json << EOF
           {
@@ -478,19 +491,32 @@ jobs:
             SYSTEM_MSG="You are an experienced full-stack engineer. Tech stack: ${{ inputs.tech_stack }}. Prioritize CI/CD test passing and analyze/fix issues."
           fi
 
+          # Helper function to sanitize log content
+          # - Removes ANSI escape sequences (color codes, cursor control)
+          # - Removes control characters (U+0000-U+001F except LF and TAB)
+          # Usage: sanitize_log filename OR command | sanitize_log
+          sanitize_log() {
+            if [ -n "$1" ]; then
+              cat "$1" 2>/dev/null || echo 'None'
+            else
+              cat
+            fi | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g' \
+               | tr -d '\000-\010\013-\037'
+          }
+
           CONTENT="以下の問題を分析し、JSON形式で修正計画を返してください。\n\n"
-          CONTENT+="# Project\n\`\`\`json\n$(cat package_info.json)\n\`\`\`\n\n"
-          CONTENT+="# Lint\n\`\`\`\n$(cat lint.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
-          CONTENT+="# TypeScript\n\`\`\`\n$(cat ts.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
-          CONTENT+="# Build\n\`\`\`\n$(cat build.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
-          CONTENT+="# Test\n\`\`\`\n$(cat test.log 2>/dev/null || echo 'None')\n\`\`\`\n\n"
-          CONTENT+="# Gemini Review\n$(cat gemini_review.txt 2>/dev/null || echo 'None')\n\n"
-          CONTENT+="# Diff\n\`\`\`diff\n$(head -500 pr_diff.txt)\n\`\`\`\n\n"
+          CONTENT+="# Project\n\`\`\`json\n$(sanitize_log package_info.json)\n\`\`\`\n\n"
+          CONTENT+="# Lint\n\`\`\`\n$(sanitize_log lint.log)\n\`\`\`\n\n"
+          CONTENT+="# TypeScript\n\`\`\`\n$(sanitize_log ts.log)\n\`\`\`\n\n"
+          CONTENT+="# Build\n\`\`\`\n$(sanitize_log build.log)\n\`\`\`\n\n"
+          CONTENT+="# Test\n\`\`\`\n$(sanitize_log test.log)\n\`\`\`\n\n"
+          CONTENT+="# Gemini Review\n$(sanitize_log gemini_review.txt)\n\n"
+          CONTENT+="# Diff\n\`\`\`diff\n$(head -500 pr_diff.txt | sanitize_log)\n\`\`\`\n\n"
           CONTENT+='JSON形式: {"should_fix_now":bool,"fixes":[{"file":"path","action":"modify","content":"full content","reason":"why"}],"summary_ja":"summary"}'
 
-          # Escape for JSON
-          ESCAPED_CONTENT=$(echo "$CONTENT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
-          ESCAPED_SYSTEM=$(echo "$SYSTEM_MSG" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          # Escape for JSON using Python (handles all remaining special characters)
+          ESCAPED_CONTENT=$(printf '%s' "$CONTENT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          ESCAPED_SYSTEM=$(printf '%s' "$SYSTEM_MSG" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
 
           cat > request.json << EOF
           {
